@@ -1,0 +1,9 @@
+PyQt6
+pynput
+requests
+pycryptodome
+python-dotenv
+pytest
+python-docx
+pywin32;platform_system=='Windows'
+pyobjc-framework-Cocoa;platform_system=='Darwin'
