@@ -21,6 +21,9 @@ class TextMonitorService(QObject):
     processing_started = pyqtSignal()
     processing_completed = pyqtSignal(str)
     processing_failed = pyqtSignal(str)
+    progress_updated = pyqtSignal(str)  # 进度更新信号
+    minimize_signal = pyqtSignal()  # 最小化信号
+    restore_signal = pyqtSignal()  # 恢复信号
     
     def __init__(self, config_manager, api_service, document_service):
         """初始化文本监听服务
@@ -40,11 +43,15 @@ class TextMonitorService(QObject):
         self.running = False
         self.is_selecting = False
         self.last_select_time = 0
+        self.is_processing = False  # 防抖标志，避免并发处理
         self.lock = threading.RLock()
         
         # 监听器
         self.keyboard_listener = None
         self.mouse_listener = None
+        
+        # 主窗口引用
+        self.main_window = None
     
     def start(self):
         """启动监听服务"""
@@ -154,7 +161,7 @@ class TextMonitorService(QObject):
         Args:
             key: 按下的键
         """
-        # 处理Enter键
+        # 只处理Enter键
         if key == Key.enter:
             # 检查是否在文本选择后短时间内按下Enter
             time_diff = time.time() - self.last_select_time
@@ -172,20 +179,30 @@ class TextMonitorService(QObject):
     
     def _handle_selection_enter(self):
         """处理选中文本后按下Enter的事件"""
+        # 防抖处理：如果正在处理中，直接返回
+        with self.lock:
+            if self.is_processing:
+                self.logger.warning("正在处理中，忽略重复请求")
+                return
+            self.is_processing = True
+        
         self.logger.info("检测到文本选择后按下Enter键")
         
         try:
             # 发出开始处理信号
             self.processing_started.emit()
+            self.progress_updated.emit("处理中")
             
             # 获取选中的文本
             selected_text = self._get_selected_text()
             if not selected_text:
                 self.logger.warning("未检测到选中的文本")
                 self.processing_failed.emit("未检测到选中的文本")
+                self.progress_updated.emit("已失败")
                 return
             
             self.logger.info(f"捕获到选中文本，长度: {len(selected_text)} 字符")
+            self.progress_updated.emit("生成中")
             
             # 加载配置
             config = self.config_manager.load_config()
@@ -194,13 +211,20 @@ class TextMonitorService(QObject):
             if 'document_path' not in config or not config['document_path']:
                 self.logger.error("未配置目标文档路径")
                 self.processing_failed.emit("未配置目标文档路径")
+                self.progress_updated.emit("失败")
                 return
             
             # 读取文档内容
             document_content = self.document_service.read_document(
                 config['document_path']
             )
-            self.logger.info(f"成功读取文档内容，长度: {len(document_content)} 字符")
+            
+            # 检查文档内容是否有效
+            if not document_content:
+                self.logger.warning(f"读取文档内容为空，长度: {len(document_content)} 字符")
+                # 可以选择继续执行或失败，这里选择继续执行但给出警告
+            else:
+                self.logger.info(f"成功读取文档内容，长度: {len(document_content)} 字符")
             
             # 获取用户自定义的主题提示词（如果有）
             theme_prompt = self._get_theme_prompt(config)
@@ -212,16 +236,28 @@ class TextMonitorService(QObject):
                 theme_prompt=theme_prompt
             )
             
-            # 写入文档 - 使用完整重写模式
+            self.progress_updated.emit("写入中")
+            
+            # 根据配置决定写入模式
+            write_mode = config.get('write_mode', 'incremental')
+            incremental = write_mode == 'incremental'
+            
+            # 写入文档
             self.document_service.write_document(
                 config['document_path'],
                 response,
-                incremental=False  # 强制使用完整重写模式
+                incremental=incremental
             )
             
-            self.logger.info("AI补写成功完成，文档已完整重写")
-            # 发出处理完成信号
+            # 根据写入模式记录不同的日志
+            if incremental:
+                self.logger.info("AI补写成功完成，文档已增量更新")
+            else:
+                self.logger.info("AI补写成功完成，文档已完整重写")
+            
+            # 发出处理完成信号和进度更新信号
             self.processing_completed.emit("AI补写成功完成")
+            self.progress_updated.emit("已完成")
             
         except Exception as e:
             error_msg = f"处理文本选择时出错: {str(e)}"
@@ -231,6 +267,10 @@ class TextMonitorService(QObject):
             # 添加错误通知
             import traceback
             self.logger.debug(f"错误详情: {traceback.format_exc()}")
+        finally:
+            # 无论成功失败，都重置处理状态
+            with self.lock:
+                self.is_processing = False
     
     def _get_selected_text(self):
         """获取当前系统选中的文本
@@ -245,50 +285,57 @@ class TextMonitorService(QObject):
             system = platform.system()
             
             if system == 'Windows':
-                try:
-                    # 使用keyboard.Controller模拟复制操作
-                    keyboard_controller = keyboard.Controller()
-                    
-                    # 模拟Ctrl+C复制选中的文本
-                    keyboard_controller.press(Key.ctrl)
-                    keyboard_controller.press('c')
-                    time.sleep(0.1)
-                    keyboard_controller.release('c')
-                    keyboard_controller.release(Key.ctrl)
-                    
-                    # 等待剪贴板更新
-                    time.sleep(0.1)
-                    
-                    # 使用subprocess调用powershell获取剪贴板
+                max_retries = 2
+                retry_delay = 0.2
+                
+                for retry in range(max_retries + 1):
                     try:
-                        import subprocess
-                        # 添加creationflags=subprocess.CREATE_NO_WINDOW参数，隐藏控制台窗口
-                        result = subprocess.run(
-                            ['powershell', '-command', 'Get-Clipboard'],
-                            capture_output=True,
-                            text=True,
-                            check=False,
-                            creationflags=subprocess.CREATE_NO_WINDOW
-                        )
+                        # 使用keyboard.Controller模拟复制操作
+                        keyboard_controller = keyboard.Controller()
                         
-                        if result.returncode == 0:
-                            text = result.stdout.strip()
-                            return text if text else ""
-                        else:
-                            if hasattr(self, 'logger'):
-                                self.logger.error(f"Windows获取剪贴板内容失败: {result.stderr}")
-                            return ""
-                    except Exception as subprocess_error:
-                        if hasattr(self, 'logger'):
-                            self.logger.error(f"执行剪贴板命令失败: {str(subprocess_error)}")
-                        return ""
-                except Exception as e:
-                    if hasattr(self, 'logger'):
-                        self.logger.error(f"Windows获取选中文本失败: {str(e)}")
-                    else:
-                        import logging
-                        logging.error(f"Windows获取选中文本失败: {str(e)}")
-                    return ""
+                        # 模拟Ctrl+C复制选中的文本
+                        keyboard_controller.press(Key.ctrl)
+                        keyboard_controller.press('c')
+                        time.sleep(0.1)
+                        keyboard_controller.release('c')
+                        keyboard_controller.release(Key.ctrl)
+                        
+                        # 等待剪贴板更新，重试时增加等待时间
+                        time.sleep(retry_delay * (retry + 1))
+                        
+                        # 使用subprocess调用powershell获取剪贴板
+                        try:
+                            import subprocess
+                            # 添加creationflags=subprocess.CREATE_NO_WINDOW参数，隐藏控制台窗口
+                            result = subprocess.run(
+                                ['powershell', '-command', 'Get-Clipboard'],
+                                capture_output=True,
+                                text=True,
+                                check=False,
+                                creationflags=subprocess.CREATE_NO_WINDOW
+                            )
+                            
+                            if result.returncode == 0:
+                                text = result.stdout.strip()
+                                if text:
+                                    if retry > 0 and hasattr(self, 'logger'):
+                                        self.logger.info(f"重试获取选中文本成功，重试次数: {retry}")
+                                    return text
+                                elif retry < max_retries and hasattr(self, 'logger'):
+                                    self.logger.warning(f"第{retry+1}次尝试获取选中文本为空，将重试")
+                            elif retry < max_retries and hasattr(self, 'logger'):
+                                self.logger.warning(f"第{retry+1}次尝试获取剪贴板失败: {result.stderr}，将重试")
+                        except Exception as subprocess_error:
+                            if retry < max_retries and hasattr(self, 'logger'):
+                                self.logger.warning(f"第{retry+1}次尝试执行剪贴板命令失败: {str(subprocess_error)}，将重试")
+                    except Exception as e:
+                        if retry < max_retries and hasattr(self, 'logger'):
+                            self.logger.warning(f"第{retry+1}次尝试获取选中文本失败: {str(e)}，将重试")
+                
+                # 所有重试都失败
+                if hasattr(self, 'logger'):
+                    self.logger.error("所有尝试获取选中文本都失败")
+                return ""
                 
             elif system == 'Darwin':  # macOS
                 # macOS系统使用pbcopy和pbpaste命令

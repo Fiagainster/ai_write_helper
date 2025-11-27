@@ -68,6 +68,16 @@ class DocumentService:
         """
         with self.lock:
             try:
+                # 首先验证文件是否存在且可访问
+                if not self.validate_path(file_path):
+                    self.logger.error(f"无效的文件路径: {file_path}")
+                    return ""
+                
+                # 检查文件大小，避免读取空文件
+                if os.path.getsize(file_path) == 0:
+                    self.logger.warning(f"文件为空: {file_path}")
+                    return ""
+                
                 # 获取文件扩展名
                 _, ext = os.path.splitext(file_path)
                 ext = ext.lower()
@@ -76,6 +86,20 @@ class DocumentService:
                 if ext in ['.txt', '.md']:
                     return self._read_text_file(file_path)
                 elif ext == '.docx':
+                    # 先尝试使用文本方式读取，检查是否是有效的文本文件
+                    try:
+                        # 检查文件前几个字节，判断是否是有效的docx文件
+                        with open(file_path, 'rb') as f:
+                            header = f.read(4)
+                            # docx文件应该是zip格式，以PK开头
+                            if header != b'PK\x03\x04':
+                                self.logger.warning(f"文件 {file_path} 扩展名是.docx，但不是有效的zip文件，尝试以文本方式读取")
+                                return self._read_text_file(file_path)
+                    except Exception as e:
+                        self.logger.warning(f"检查docx文件格式时出错: {str(e)}，尝试以文本方式读取")
+                        return self._read_text_file(file_path)
+                    
+                    # 如果是有效的docx文件，使用专门的方法读取
                     return self._read_docx_file(file_path)
                 else:
                     # 默认为文本文件
@@ -84,7 +108,8 @@ class DocumentService:
                     
             except Exception as e:
                 self.logger.error(f"读取文档时出错: {str(e)}")
-                raise
+                # 出错时返回空字符串，允许程序继续执行
+                return ""
     
     def write_document(self, file_path, content, incremental=False):
         """写入文档内容（默认为重写模式）
@@ -216,7 +241,10 @@ class DocumentService:
             # 写入内容到临时文件
             with open(temp_path, 'w', encoding='utf-8') as f:
                 f.write(existing_content)
-                if existing_content and not existing_content.endswith('\n'):
+                # 在现有内容和新内容之间添加空行，使内容更加清晰
+                if existing_content and content:
+                    if not existing_content.endswith('\n'):
+                        f.write('\n')
                     f.write('\n')
                 f.write(content)
                 # 确保内容被刷新到磁盘
@@ -239,21 +267,38 @@ class DocumentService:
             # 尝试导入python-docx库
             import docx
             
+            # 确保文件存在且可访问
+            if not os.path.exists(file_path):
+                self.logger.error(f"文件不存在: {file_path}")
+                # 尝试使用备用方案
+                return self._extract_docx_text(file_path)
+            
+            if not os.access(file_path, os.R_OK):
+                self.logger.error(f"无文件读取权限: {file_path}")
+                # 尝试使用备用方案
+                return self._extract_docx_text(file_path)
+            
+            # 尝试使用python-docx读取
+            self.logger.debug(f"使用python-docx读取Word文档: {file_path}")
             doc = docx.Document(file_path)
             content = []
             
             for para in doc.paragraphs:
                 content.append(para.text)
             
-            return '\n'.join(content)
+            result = '\n'.join(content)
+            self.logger.debug(f"成功使用python-docx读取Word文档，获取到 {len(result)} 字符")
+            return result
             
         except ImportError:
             self.logger.warning("python-docx库未安装，尝试提取纯文本")
             # 作为备用方案，可以将docx作为zip文件处理
             return self._extract_docx_text(file_path)
         except Exception as e:
-            self.logger.error(f"读取Word文档时出错: {str(e)}")
-            raise
+            self.logger.error(f"使用python-docx读取Word文档时出错: {str(e)}")
+            self.logger.info("尝试使用备用方案提取纯文本")
+            # 尝试使用备用方案
+            return self._extract_docx_text(file_path)
     
     def _write_docx_file(self, temp_path, target_path, content, incremental):
         """写入Word文档，增强重写模式
@@ -280,17 +325,20 @@ class DocumentService:
                 # 增量模式：打开现有文档
                 try:
                     doc = docx.Document(target_path)
-                    # 添加新内容
-                    for line in content.split('\n'):
-                        if line.strip():
-                            doc.add_paragraph(line.strip())
+                    # 添加新内容，按空行分割段落
+                    paragraphs = content.split('\n\n')
+                    for para_text in paragraphs:
+                        if para_text.strip():
+                            doc.add_paragraph(para_text.strip())
                 except Exception as e:
                     self.logger.error(f"读取现有文档失败: {str(e)}")
                     # 如果读取失败，则创建新文档
                     doc = docx.Document()
-                    for line in content.split('\n'):
-                        if line.strip():
-                            doc.add_paragraph(line.strip())
+                    # 按空行分割段落
+                    paragraphs = content.split('\n\n')
+                    for para_text in paragraphs:
+                        if para_text.strip():
+                            doc.add_paragraph(para_text.strip())
             else:
                 # 完整重写模式
                 self.logger.debug(f"执行Word文档完整重写: {target_path}")

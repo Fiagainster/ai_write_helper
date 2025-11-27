@@ -50,7 +50,8 @@ class ConfigManager:
             "auto_save": True,
             "theme": "light",
             "start_minimized": False,
-            "listen_enabled": True
+            "listen_enabled": True,
+            "write_mode": "incremental"  # 写入模式：incremental（增量）或 overwrite（全量）
         }
     
     def _get_app_data_dir(self) -> str:

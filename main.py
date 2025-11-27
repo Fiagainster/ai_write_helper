@@ -142,6 +142,9 @@ class AIWriteHelperApplication:
         # 连接监控服务信号到主窗口
         if self.main_window and self.monitor_service:
             self.main_window.connect_monitor_signals(self.monitor_service)
+            
+            # 将主窗口引用传递给监控服务
+            self.monitor_service.main_window = self.main_window
     
     def _on_config_updated(self):
         """配置更新时的处理函数"""
