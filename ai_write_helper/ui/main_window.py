@@ -9,7 +9,8 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QFileDialog,
     QTextEdit, QMessageBox, QGroupBox, QComboBox,
-    QTabWidget, QSystemTrayIcon, QMenu, QCheckBox
+    QTabWidget, QSystemTrayIcon, QMenu, QCheckBox,
+    QScrollArea, QFrame, QDialog
 )
 from PyQt6.QtGui import QAction, QPainter, QBrush, QColor, QFont, QPen
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint, QRect
@@ -17,6 +18,12 @@ from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint, QRect
 
 class MinimizeBall(QWidget):
     """最小化球类，用于显示最小化后的窗口和进度信息"""
+    
+    # 状态定义
+    STATUS_STANDBY = "standby"
+    STATUS_PROCESSING = "processing"
+    STATUS_COMPLETED = "completed"
+    STATUS_ERROR = "error"
     
     # 信号定义
     clicked = pyqtSignal()  # 点击信号
@@ -39,11 +46,48 @@ class MinimizeBall(QWidget):
         self.mouse_press_pos = None
         self.mouse_move_pos = None
         
-        # 动画效果
+        # 状态管理
+        self.status = self.STATUS_STANDBY
+        self.status_timer = QTimer(self)
+        self.status_timer.setSingleShot(True)
+        self.status_timer.timeout.connect(self.reset_to_standby)
+        
+        # 动画效果（极简版）
         self.animation_timer = QTimer(self)
         self.animation_timer.timeout.connect(self.update)
-        self.animation_timer.start(50)  # 20fps动画
+        self.animation_timer.start(50)  # 20fps动画，足够流畅且不影响性能
         self.animation_offset = 0
+        
+        # 动态效果开关
+        self.dynamic_effects_enabled = True
+    
+    def set_status(self, status):
+        """设置状态
+        
+        Args:
+            status: 状态值
+        """
+        self.status = status
+        
+        # 如果是完成或错误状态，1秒后恢复到待机状态
+        if status in [self.STATUS_COMPLETED, self.STATUS_ERROR]:
+            self.status_timer.start(1000)
+        
+        self.update()
+    
+    def reset_to_standby(self):
+        """重置到待机状态"""
+        self.status = self.STATUS_STANDBY
+        self.update()
+    
+    def set_dynamic_effects(self, enabled):
+        """设置动态效果开关
+        
+        Args:
+            enabled: 是否启用动态效果
+        """
+        self.dynamic_effects_enabled = enabled
+        self.update()
     
     def paintEvent(self, event):
         """绘制最小化球"""
@@ -51,37 +95,41 @@ class MinimizeBall(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         
-        # 绘制阴影效果
-        shadow_rect = QRect(2, 2, self.width(), self.height())
-        shadow_brush = QBrush(QColor(0, 0, 0, 30))
-        painter.setBrush(shadow_brush)
-        painter.setPen(QPen(Qt.PenStyle.NoPen))
-        painter.drawEllipse(shadow_rect)
-        
-        # 绘制圆形背景（渐变效果，增强立体感）
+        # 绘制圆形背景
         center = self.rect().center()
-        radius = self.width() // 2 - 2
+        radius = self.width() // 2
         
-        # 主渐变
-        gradient = QBrush(QColor(76, 175, 80, 230))
-        painter.setBrush(gradient)
+        # 根据状态设置颜色
+        if self.status == self.STATUS_STANDBY:
+            # 待机状态：静态绿色
+            bg_color = QColor(76, 175, 80, 230)
+        elif self.status == self.STATUS_PROCESSING:
+            # 处理中状态：缓慢闪烁绿色
+            if self.dynamic_effects_enabled:
+                # 极简动画：颜色亮度变化，增加变化范围，使效果更明显
+                brightness = 50 + (self.animation_offset % 100) // 2
+                bg_color = QColor(brightness, 175, 80, 230)
+            else:
+                bg_color = QColor(76, 175, 80, 230)
+        elif self.status == self.STATUS_COMPLETED:
+            # 完成状态：亮绿色
+            bg_color = QColor(46, 204, 113, 230)
+        elif self.status == self.STATUS_ERROR:
+            # 错误状态：红色
+            bg_color = QColor(231, 76, 60, 230)
+        else:
+            # 默认状态
+            bg_color = QColor(76, 175, 80, 230)
+        
+        # 绘制背景
+        painter.setBrush(QBrush(bg_color))
         painter.setPen(QPen(Qt.PenStyle.NoPen))
         painter.drawEllipse(center, radius, radius)
         
         # 高光效果（增强立体感）
-        highlight_rect = QRect(center.x() - radius // 2, center.y() - radius // 2, radius, radius)
         highlight_brush = QBrush(QColor(255, 255, 255, 40))
         painter.setBrush(highlight_brush)
-        painter.drawEllipse(highlight_rect)
-        
-        # 动态波纹效果
-        self.animation_offset = (self.animation_offset + 1) % 100
-        ripple_radius = radius + self.animation_offset // 10
-        ripple_pen = QPen(QColor(255, 255, 255, 20 - self.animation_offset // 5))
-        ripple_pen.setWidth(1)
-        painter.setPen(ripple_pen)
-        painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-        painter.drawEllipse(center, ripple_radius, ripple_radius)
+        painter.drawEllipse(center, radius // 2, radius // 2)
         
         # 绘制进度文字
         if self.progress_text:
@@ -90,6 +138,9 @@ class MinimizeBall(QWidget):
             painter.setPen(QColor(255, 255, 255))
             painter.setFont(QFont("微软雅黑", 12, QFont.Weight.Bold))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, display_text)
+        
+        # 更新动画偏移
+        self.animation_offset = (self.animation_offset + 1) % 100
     
     def mousePressEvent(self, event):
         """鼠标按下事件"""
@@ -179,6 +230,50 @@ class MainWindow(QMainWindow):
         self.minimize_ball = MinimizeBall()
         self.minimize_ball.clicked.connect(self.restore_from_ball)
         
+        # 提示词模板数据
+        self.prompt_templates = [
+            {
+                "category": "科技论文",
+                "description": "科技论文风格，注重数据分析和逻辑推理",
+                "content": "请以科技论文风格重写文档，注重数据分析和逻辑推理，使用专业术语，结构清晰，论证严谨。"
+            },
+            {
+                "category": "商业报告",
+                "description": "商业报告风格，突出结论和行动建议",
+                "content": "请以商业报告风格重写文档，突出结论和行动建议，语言简洁明了，重点突出，具有说服力。"
+            },
+            {
+                "category": "创意写作",
+                "description": "创意写作风格，使用生动的描述和比喻",
+                "content": "请以创意写作风格重写文档，使用生动的描述和比喻，语言富有表现力，情节引人入胜。"
+            },
+            {
+                "category": "学术论文",
+                "description": "学术论文风格，严谨规范，引用准确",
+                "content": "请以学术论文风格重写文档，严谨规范，引用准确，结构完整，论点明确，论据充分。"
+            },
+            {
+                "category": "新闻报道",
+                "description": "新闻报道风格，客观公正，时效性强",
+                "content": "请以新闻报道风格重写文档，客观公正，时效性强，语言简洁，信息量大，结构清晰。"
+            },
+            {
+                "category": "产品描述",
+                "description": "产品描述风格，突出产品特点和优势",
+                "content": "请以产品描述风格重写文档，突出产品特点和优势，语言生动，具有吸引力，能够激发购买欲望。"
+            },
+            {
+                "category": "技术文档",
+                "description": "技术文档风格，准确详细，易于理解",
+                "content": "请以技术文档风格重写文档，准确详细，易于理解，结构清晰，步骤明确，便于操作。"
+            },
+            {
+                "category": "营销文案",
+                "description": "营销文案风格，富有感染力，促进转化",
+                "content": "请以营销文案风格重写文档，富有感染力，语言生动，能够吸引目标受众，促进转化。"
+            }
+        ]
+        
         # 初始化UI
         self.init_ui()
         
@@ -212,7 +307,7 @@ class MainWindow(QMainWindow):
         """显示使用说明"""
         usage_text = """AI写作助手使用说明：
 
-1. 在API设置中输入DeepSeek API密钥并验证
+1. 在API设置中输入AI服务API密钥并验证
 2. 在文档设置中选择目标文档和写入模式
 3. 在主题提示词中设置AI补写的方向和风格
 4. 保存配置后，在任意应用中选中文本并按下Enter键
@@ -221,6 +316,10 @@ class MainWindow(QMainWindow):
 写入模式说明：
 - 增量写入：生成的内容会追加到文档末尾
 - 全量重写：生成的内容会替换整个文档
+- 光标补写：在文档中标记的光标位置插入内容，不改变其他内容
+  使用方法：在文档中需要插入内容的位置添加 [CURSOR] 标记
+  例如："这是一个测试[CURSOR]文档"
+  AI会在[CURSOR]标记处插入生成的内容，并移除该标记
 """
         QMessageBox.information(self, "使用说明", usage_text)
     
@@ -246,6 +345,94 @@ class MainWindow(QMainWindow):
 - 邮箱：508125305@qq.com
 """
         QMessageBox.information(self, "联系方式", contact_text)
+    
+    def show_prompt_templates(self):
+        """显示提示词模板弹窗"""
+        # 创建弹窗
+        dialog = QDialog(self)
+        dialog.setWindowTitle("提示词模板")
+        dialog.setGeometry(200, 200, 500, 400)
+        dialog.setMinimumSize(450, 350)
+        
+        # 主布局
+        main_layout = QVBoxLayout(dialog)
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # 创建滚动区域
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        
+        # 模板容器
+        template_container = QWidget()
+        template_container_layout = QVBoxLayout(template_container)
+        template_container_layout.setSpacing(5)
+        template_container_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 添加模板列表
+        for template in self.prompt_templates:
+            # 模板项
+            template_item = QWidget()
+            template_item_layout = QVBoxLayout(template_item)
+            template_item_layout.setSpacing(2)
+            template_item_layout.setContentsMargins(5, 5, 5, 5)
+            
+            # 分类和描述
+            category_desc = QLabel(f"<b>{template['category']}</b>: {template['description']}")
+            category_desc.setStyleSheet("font-size: 10px;")
+            category_desc.setWordWrap(True)
+            template_item_layout.addWidget(category_desc)
+            
+            # 提示词内容
+            content_label = QLabel(template['content'])
+            content_label.setStyleSheet("font-size: 10px; background-color: #f5f5f5; padding: 5px; border-radius: 3px;")
+            content_label.setWordWrap(True)
+            template_item_layout.addWidget(content_label)
+            
+            # 复制按钮
+            copy_button = QPushButton("复制")
+            copy_button.setFixedHeight(20)
+            copy_button.setStyleSheet("font-size: 9px; background-color: #2196F3; color: white; border: none; border-radius: 3px;")
+            copy_button.clicked.connect(lambda checked, c=template['content'], d=dialog: self.copy_to_clipboard(c, d))
+            template_item_layout.addWidget(copy_button)
+            
+            # 添加到容器
+            template_container_layout.addWidget(template_item)
+        
+        # 添加占位符
+        template_container_layout.addStretch()
+        
+        # 设置滚动区域内容
+        scroll_area.setWidget(template_container)
+        main_layout.addWidget(scroll_area)
+        
+        # 显示弹窗
+        dialog.exec()
+    
+    def copy_to_clipboard(self, text, dialog=None):
+        """复制文本到剪贴板
+        
+        Args:
+            text: 要复制的文本
+            dialog: 弹窗对象，用于显示提示
+        """
+        from PyQt6.QtGui import QGuiApplication
+        
+        # 复制到剪贴板
+        clipboard = QGuiApplication.clipboard()
+        clipboard.setText(text)
+        
+        # 显示复制成功提示
+        if dialog:
+            # 如果有弹窗，在弹窗状态栏显示提示
+            status_bar = dialog.statusBar() if hasattr(dialog, 'statusBar') else self.statusBar()
+            status_bar.showMessage("提示词已复制到剪贴板")
+            QTimer.singleShot(1000, lambda: status_bar.showMessage(""))
+        else:
+            # 否则在主窗口状态栏显示提示
+            self.statusBar().showMessage("提示词已复制到剪贴板")
+            QTimer.singleShot(1000, lambda: self.statusBar().showMessage("就绪"))
     
     def init_ui(self):
         """初始化用户界面"""
@@ -287,6 +474,25 @@ class MainWindow(QMainWindow):
         api_layout.setSpacing(5)
         api_layout.setContentsMargins(5, 5, 5, 5)
         
+        # AI服务选择器
+        service_layout = QHBoxLayout()
+        service_label = QLabel("AI服务:")
+        service_label.setFixedWidth(60)
+        service_label.setStyleSheet("font-size: 11px;")
+        service_layout.addWidget(service_label)
+        self.ai_service_combo = QComboBox()
+        self.ai_service_combo.addItem("DeepSeek", "deepseek")
+        self.ai_service_combo.addItem("豆包", "doubao")
+        self.ai_service_combo.addItem("Kimi", "kimi")
+        self.ai_service_combo.addItem("通义千问", "qianwen")
+        self.ai_service_combo.setFixedHeight(25)
+        self.ai_service_combo.setStyleSheet("font-size: 11px;")
+        self.ai_service_combo.currentIndexChanged.connect(self.on_ai_service_changed)
+        service_layout.addWidget(self.ai_service_combo)
+        service_layout.addStretch()
+        
+        api_layout.addLayout(service_layout)
+        
         # API密钥输入
         key_layout = QHBoxLayout()
         key_label = QLabel("API密钥:")
@@ -310,7 +516,7 @@ class MainWindow(QMainWindow):
         api_layout.addLayout(key_layout)
         
         # 状态标签
-        self.api_status_label = QLabel("请输入并验证API密钥")
+        self.api_status_label = QLabel("请选择AI服务并输入API密钥")
         self.api_status_label.setStyleSheet("font-size: 10px; color: #666;")
         api_layout.addWidget(self.api_status_label)
         
@@ -352,12 +558,27 @@ class MainWindow(QMainWindow):
         self.write_mode_combo = QComboBox()
         self.write_mode_combo.addItem("增量写入", "incremental")
         self.write_mode_combo.addItem("全量重写", "overwrite")
+        self.write_mode_combo.addItem("光标补写", "cursor")
         self.write_mode_combo.setFixedHeight(25)
         self.write_mode_combo.setStyleSheet("font-size: 11px;")
         write_mode_layout.addWidget(self.write_mode_combo)
         write_mode_layout.addStretch()
         
         doc_layout.addLayout(write_mode_layout)
+        
+        # 动态效果开关
+        effect_layout = QHBoxLayout()
+        effect_label = QLabel("动态效果:")
+        effect_label.setFixedWidth(70)
+        effect_label.setStyleSheet("font-size: 11px;")
+        effect_layout.addWidget(effect_label)
+        self.dynamic_effects_checkbox = QCheckBox()
+        self.dynamic_effects_checkbox.setChecked(True)  # 默认开启
+        self.dynamic_effects_checkbox.setStyleSheet("font-size: 11px;")
+        effect_layout.addWidget(self.dynamic_effects_checkbox)
+        effect_layout.addStretch()
+        
+        doc_layout.addLayout(effect_layout)
         
 
         
@@ -410,6 +631,13 @@ class MainWindow(QMainWindow):
         contact_button.setStyleSheet("font-size: 12px;")
         help_layout.addWidget(contact_button)
         
+        # 提示词模板按钮
+        template_button = QPushButton("提示词模板")
+        template_button.clicked.connect(self.show_prompt_templates)
+        template_button.setFixedHeight(30)
+        template_button.setStyleSheet("font-size: 12px;")
+        help_layout.addWidget(template_button)
+        
         # 占位符，使按钮居中显示
         help_layout.addStretch()
         
@@ -458,9 +686,15 @@ class MainWindow(QMainWindow):
     
     def load_config_to_ui(self):
         """加载配置到UI界面"""
-        # 加载API密钥
-        if 'api_key' in self.config:
-            self.api_key_input.setText(self.config['api_key'])
+        # 加载AI服务类型
+        ai_service = self.config.get('ai_service', 'deepseek')
+        index = self.ai_service_combo.findData(ai_service)
+        if index >= 0:
+            self.ai_service_combo.setCurrentIndex(index)
+        
+        # 加载对应服务的API密钥
+        api_key = self.config.get(f"{ai_service}_api_key", "")
+        self.api_key_input.setText(api_key)
         
         # 加载文档路径
         if 'document_path' in self.config:
@@ -473,28 +707,51 @@ class MainWindow(QMainWindow):
             if index >= 0:
                 self.write_mode_combo.setCurrentIndex(index)
         
+        # 加载动态效果开关
+        if 'dynamic_effects_enabled' in self.config:
+            self.dynamic_effects_checkbox.setChecked(self.config['dynamic_effects_enabled'])
+            self.minimize_ball.set_dynamic_effects(self.config['dynamic_effects_enabled'])
+        else:
+            self.dynamic_effects_checkbox.setChecked(True)  # 默认开启
+            self.minimize_ball.set_dynamic_effects(True)
+        
         # 加载主题提示词
         if 'templates' in self.config and 'default' in self.config['templates']:
             self.template_editor.setPlainText(self.config['templates']['default'])
     
+    def on_ai_service_changed(self):
+        """AI服务选择改变时的处理"""
+        # 获取当前选择的AI服务
+        ai_service = self.ai_service_combo.currentData()
+        
+        # 加载对应服务的API密钥
+        api_key = self.config.get(f"{ai_service}_api_key", "")
+        self.api_key_input.setText(api_key)
+        
+        # 更新状态标签
+        self.api_status_label.setText(f"请输入并验证{ai_service} API密钥")
+    
     def validate_api_key(self):
         """验证API密钥"""
+        # 获取当前选择的AI服务
+        ai_service = self.ai_service_combo.currentData()
         api_key = self.api_key_input.text().strip()
+        
         if not api_key:
             QMessageBox.warning(self, "警告", "请输入API密钥")
             return
         
         # 调用API服务验证密钥
         try:
-            is_valid = self.api_service.validate_key(api_key)
+            is_valid = self.api_service.validate_key(api_key, ai_service)
             if is_valid:
-                self.api_status_label.setText("✓ API密钥有效")
+                self.api_status_label.setText(f"✓ {ai_service} API密钥有效")
                 self.api_status_label.setStyleSheet("color: green")
-                QMessageBox.information(self, "成功", "API密钥验证成功")
+                QMessageBox.information(self, "成功", f"{ai_service} API密钥验证成功")
             else:
-                self.api_status_label.setText("✗ API密钥无效")
+                self.api_status_label.setText(f"✗ {ai_service} API密钥无效")
                 self.api_status_label.setStyleSheet("color: red")
-                QMessageBox.critical(self, "错误", "API密钥验证失败")
+                QMessageBox.critical(self, "错误", f"{ai_service} API密钥验证失败")
         except Exception as e:
             self.api_status_label.setText(f"✗ 验证失败: {str(e)}")
             self.api_status_label.setStyleSheet("color: red")
@@ -515,12 +772,18 @@ class MainWindow(QMainWindow):
     def save_config(self):
         """保存所有配置"""
         try:
+            # 获取当前选择的AI服务
+            ai_service = self.ai_service_combo.currentData()
+            
             # 获取API密钥
             api_key = self.api_key_input.text().strip()
             if not api_key:
                 QMessageBox.warning(self, "警告", "请输入API密钥")
                 return
-            self.config['api_key'] = api_key
+            
+            # 保存AI服务类型和API密钥
+            self.config['ai_service'] = ai_service
+            self.config[f"{ai_service}_api_key"] = api_key
             
             # 获取文档路径
             document_path = self.doc_path_input.text().strip()
@@ -541,6 +804,13 @@ class MainWindow(QMainWindow):
             
             # 始终显示最小化球
             self.config['show_minimize_ball'] = True
+            
+            # 获取动态效果开关状态
+            dynamic_effects_enabled = self.dynamic_effects_checkbox.isChecked()
+            self.config['dynamic_effects_enabled'] = dynamic_effects_enabled
+            
+            # 更新最小化球的动态效果设置
+            self.minimize_ball.set_dynamic_effects(dynamic_effects_enabled)
             
             # 验证文档路径是否有效
             if not self.document_service.validate_path(document_path):
@@ -590,6 +860,16 @@ class MainWindow(QMainWindow):
         """处理进度更新信号"""
         # 在最小化球上显示进度信息
         self.minimize_ball.set_progress(progress_text)
+        
+        # 根据进度文本设置状态
+        if "处理中" in progress_text or "生成中" in progress_text or "写入中" in progress_text:
+            self.minimize_ball.set_status(self.minimize_ball.STATUS_PROCESSING)
+        elif "已完成" in progress_text or "成功" in progress_text:
+            self.minimize_ball.set_status(self.minimize_ball.STATUS_COMPLETED)
+        elif "已失败" in progress_text or "错误" in progress_text:
+            self.minimize_ball.set_status(self.minimize_ball.STATUS_ERROR)
+        else:
+            self.minimize_ball.set_status(self.minimize_ball.STATUS_STANDBY)
     
     def closeEvent(self, event):
         """窗口关闭事件

@@ -111,13 +111,14 @@ class DocumentService:
                 # 出错时返回空字符串，允许程序继续执行
                 return ""
     
-    def write_document(self, file_path, content, incremental=False):
-        """写入文档内容（默认为重写模式）
+    def write_document(self, file_path, content, incremental=False, write_mode="incremental"):
+        """写入文档内容
         
         Args:
             file_path: 文件路径
             content: 要写入的内容
             incremental: 是否增量更新（默认为False，即完整重写）
+            write_mode: 写入模式，可选值：incremental, overwrite, cursor
         """
         with self.lock:
             # 验证文件路径
@@ -129,7 +130,13 @@ class DocumentService:
             ext = ext.lower()
             
             # 记录写入模式
-            mode = "重写" if not incremental else "增量"
+            if write_mode == "cursor":
+                mode = "光标补写"
+            elif incremental:
+                mode = "增量"
+            else:
+                mode = "重写"
+            
             self.logger.info(f"开始{mode}写入文档: {file_path}")
             self.logger.debug(f"写入内容长度: {len(content)} 字符")
             
@@ -142,15 +149,24 @@ class DocumentService:
             temp_path = tempfile.mktemp(dir=temp_dir)
             
             try:
-                # 根据文件类型选择不同的写入方法
+                # 根据文件类型和写入模式选择不同的写入方法
                 if ext in ['.txt', '.md']:
-                    self._write_text_file(temp_path, file_path, content, incremental)
+                    if write_mode == "cursor":
+                        self._write_text_file_at_cursor(temp_path, file_path, content)
+                    else:
+                        self._write_text_file(temp_path, file_path, content, incremental)
                 elif ext == '.docx':
-                    self._write_docx_file(temp_path, file_path, content, incremental)
+                    if write_mode == "cursor":
+                        self._write_docx_file_at_cursor(temp_path, file_path, content)
+                    else:
+                        self._write_docx_file(temp_path, file_path, content, incremental)
                 else:
                     # 默认为文本文件
                     self.logger.warning(f"不支持的文件格式: {ext}，尝试以文本方式写入")
-                    self._write_text_file(temp_path, file_path, content, incremental)
+                    if write_mode == "cursor":
+                        self._write_text_file_at_cursor(temp_path, file_path, content)
+                    else:
+                        self._write_text_file(temp_path, file_path, content, incremental)
                 
                 self.logger.info(f"文档{mode}写入成功: {file_path}")
                     
@@ -253,6 +269,198 @@ class DocumentService:
             
             # 原子性替换文件
             self._atomic_replace(temp_path, target_path)
+    
+    def _get_cursor_position(self, file_path):
+        """获取当前文档的光标位置
+        
+        Args:
+            file_path: 文件路径
+            
+        Returns:
+            int: 光标位置，如果无法获取则返回-1
+        """
+        try:
+            # 对于Windows系统，使用Win32 API获取当前活动窗口的光标位置
+            if os.name == 'nt':
+                import win32gui
+                import win32process
+                import win32con
+                import win32api
+                
+                # 获取当前活动窗口
+                hwnd = win32gui.GetForegroundWindow()
+                if hwnd:
+                    # 获取窗口标题
+                    window_title = win32gui.GetWindowText(hwnd)
+                    self.logger.debug(f"当前活动窗口: {window_title}")
+                    
+                    # 检查窗口是否与目标文件相关
+                    if os.path.basename(file_path) in window_title:
+                        # 这里可以添加更复杂的逻辑来获取具体的光标位置
+                        # 由于不同编辑器的实现方式不同，这里我们返回文档末尾位置
+                        # 实际应用中可以根据需要扩展，例如：
+                        # 1. 对于Notepad，可以使用SendMessage获取光标位置
+                        # 2. 对于Word，可以使用COM接口获取光标位置
+                        # 3. 对于其他编辑器，可以使用不同的方法
+                        self.logger.debug(f"当前活动窗口与目标文件相关: {file_path}")
+                        return -1  # 返回-1表示在文档末尾插入
+            
+            # 如果无法获取光标位置，返回-1
+            return -1
+        except Exception as e:
+            self.logger.error(f"获取光标位置时出错: {str(e)}")
+            return -1
+    
+    def _write_text_file_at_cursor(self, temp_path, target_path, content):
+        """在文本文件的光标位置插入内容
+        
+        Args:
+            temp_path: 临时文件路径
+            target_path: 目标文件路径
+            content: 要插入的内容
+        """
+        # 确保内容是字符串类型
+        if not isinstance(content, str):
+            content = str(content)
+        
+        # 确保内容不为空
+        content = content.strip()
+        if not content:
+            self.logger.warning("写入内容为空")
+            return
+        
+        # 读取现有内容
+        existing_content = ''
+        if os.path.exists(target_path):
+            existing_content = self._read_text_file(target_path)
+        
+        # 获取光标位置
+        cursor_pos = self._get_cursor_position(target_path)
+        
+        # 查找光标标记 [CURSOR]，如果存在则在该位置插入
+        cursor_marker = "[CURSOR]"
+        if cursor_marker in existing_content:
+            # 在光标标记位置插入内容
+            self.logger.debug(f"在文本文件中找到光标标记，目标文件: {target_path}")
+            new_content = existing_content.replace(cursor_marker, content, 1)
+        elif cursor_pos != -1 and cursor_pos < len(existing_content):
+            # 在获取到的光标位置插入内容
+            self.logger.debug(f"在文本文件光标位置 {cursor_pos} 插入内容，目标文件: {target_path}")
+            new_content = existing_content[:cursor_pos] + content + existing_content[cursor_pos:]
+        else:
+            # 如果没有光标标记且无法获取光标位置，在文档末尾插入
+            self.logger.debug(f"未找到光标标记且无法获取光标位置，在文本文件末尾插入内容，目标文件: {target_path}")
+            # 在现有内容和新内容之间添加空行，使内容更加清晰
+            if existing_content and content:
+                if not existing_content.endswith('\n'):
+                    new_content = existing_content + '\n\n' + content
+                else:
+                    new_content = existing_content + '\n' + content
+            else:
+                new_content = existing_content + content
+        
+        # 写入内容到临时文件
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+            # 确保内容被刷新到磁盘
+            f.flush()
+            os.fsync(f.fileno())
+        
+        # 原子性替换文件
+        self._atomic_replace(temp_path, target_path)
+    
+    def _write_docx_file_at_cursor(self, temp_path, target_path, content):
+        """在Word文档的光标位置插入内容
+        
+        Args:
+            temp_path: 临时文件路径
+            target_path: 目标文件路径
+            content: 要插入的内容
+        """
+        try:
+            import docx
+            
+            # 确保内容是字符串类型
+            if not isinstance(content, str):
+                content = str(content)
+            
+            content = content.strip()
+            if not content:
+                self.logger.warning("写入内容为空")
+                return
+            
+            # 处理文件写入
+            if os.path.exists(target_path):
+                # 打开现有文档
+                try:
+                    doc = docx.Document(target_path)
+                    
+                    # 查找包含光标标记的段落
+                    cursor_found = False
+                    for i, para in enumerate(doc.paragraphs):
+                        if "[CURSOR]" in para.text:
+                            # 在包含光标标记的段落中插入内容
+                            self.logger.debug(f"在Word文档中找到光标标记，目标文件: {target_path}")
+                            
+                            # 分割段落文本
+                            text = para.text
+                            cursor_pos = text.find("[CURSOR]")
+                            
+                            # 清除段落内容
+                            para.clear()
+                            
+                            # 添加光标前的文本
+                            if cursor_pos > 0:
+                                para.add_run(text[:cursor_pos])
+                            
+                            # 添加插入的内容
+                            para.add_run(content)
+                            
+                            # 添加光标后的文本
+                            if cursor_pos + 8 < len(text):
+                                para.add_run(text[cursor_pos+8:])
+                            
+                            cursor_found = True
+                            break
+                    
+                    if not cursor_found:
+                        # 如果没有找到光标标记，在文档末尾插入
+                        self.logger.debug(f"未找到光标标记，在Word文档末尾插入内容，目标文件: {target_path}")
+                        paragraphs = content.split('\n\n')
+                        for para_text in paragraphs:
+                            if para_text.strip():
+                                doc.add_paragraph(para_text.strip())
+                except Exception as e:
+                    self.logger.error(f"读取现有文档失败: {str(e)}")
+                    # 如果读取失败，则创建新文档
+                    doc = docx.Document()
+                    paragraphs = content.split('\n\n')
+                    for para_text in paragraphs:
+                        if para_text.strip():
+                            doc.add_paragraph(para_text.strip())
+            else:
+                # 创建新文档
+                doc = docx.Document()
+                paragraphs = content.split('\n\n')
+                for para_text in paragraphs:
+                    if para_text.strip():
+                        doc.add_paragraph(para_text.strip())
+            
+            # 保存到临时文件
+            temp_docx_path = temp_path + '.docx'
+            doc.save(temp_docx_path)
+            
+            # 原子性替换文件
+            self._atomic_replace(temp_docx_path, target_path)
+            self.logger.debug(f"Word文档光标插入操作成功完成")
+            
+        except ImportError:
+            self.logger.warning("python-docx库未安装，将内容保存为文本文件")
+            # 作为备用方案，保存为文本文件
+            self._write_text_file_at_cursor(temp_path, target_path + '.txt', content)
+        except Exception as e:
+            self.logger.error(f"写入Word文档时出错: {str(e)}")
+            raise
     
     def _read_docx_file(self, file_path):
         """读取Word文档

@@ -13,7 +13,8 @@ from threading import RLock
 from typing import Dict, Any, Optional
 
 # 内置提示词模板（不体现在UI）
-INTERNAL_PROMPT_TEMPLATE = """
+# 全量重写模式提示词
+REWRITE_PROMPT_TEMPLATE = """
 你是一个专业的文本优化助手。请根据用户提供的选中文本和文档内容，结合指定的主题要求，对整个文档进行全面重写和优化。
 
 ## 要求：
@@ -38,16 +39,102 @@ INTERNAL_PROMPT_TEMPLATE = """
 请生成完整的重写后文档内容，确保内容全面、专业且符合上述所有要求。不要输出任何多余的解释说明，只返回最终的重写文档内容。
 """
 
+# 增量写入模式提示词
+INCREMENTAL_PROMPT_TEMPLATE = """
+你是一个专业的文本补写助手。请根据用户提供的选中文本和文档内容，结合指定的主题要求，生成增量补写内容。
+
+## 要求：
+1. **上下文关联**：仔细分析选中文本和文档内容，理解上下文和逻辑关系
+2. **主题一致**：确保生成的内容与用户指定的主题提示词保持一致
+3. **增量补写**：仅生成补写内容，不要重复原文档内容
+4. **自然衔接**：生成的内容应与原文档自然衔接，保持逻辑连贯
+5. **语言流畅**：确保语言表达自然流畅
+6. **内容扩展**：根据选中文本和主题要求进行合理扩展
+
+## 用户输入信息：
+
+### 选中文本（需要重点关注）：
+{selected_text}
+
+### 文档内容（需要关联上下文）：
+{document_content}
+
+### 主题要求（如有）：
+{theme_prompt}
+
+请生成增量补写内容，确保内容与原文档自然衔接，符合上述所有要求。不要输出任何多余的解释说明，只返回最终的补写内容。
+"""
+
+# 光标补写模式提示词
+CURSOR_PROMPT_TEMPLATE = """
+你是一个专业的文本补写助手。请根据用户提供的选中文本和文档内容，结合指定的主题要求，生成光标处的补写内容。
+
+## 要求：
+1. **上下文关联**：仔细分析选中文本和文档内容，理解上下文和逻辑关系
+2. **主题一致**：确保生成的内容与用户指定的主题提示词保持一致
+3. **精准补写**：仅生成光标处的补写内容，不要重复原文档内容
+4. **自然衔接**：生成的内容应与原文档自然衔接，保持逻辑连贯
+5. **语言流畅**：确保语言表达自然流畅
+6. **内容扩展**：根据选中文本和主题要求进行合理扩展
+7. **不改变上下文**：绝对不能修改或重写原文档的上下文内容
+
+## 用户输入信息：
+
+### 选中文本（需要重点关注）：
+{selected_text}
+
+### 文档内容（需要关联上下文）：
+{document_content}
+
+### 主题要求（如有）：
+{theme_prompt}
+
+请生成光标处的补写内容，确保内容与原文档自然衔接，符合上述所有要求。不要输出任何多余的解释说明，只返回最终的补写内容。
+"""
+
 
 class APIService:
-    """API服务类，负责与DeepSeek API进行通信"""
+    """API服务类，负责与各种AI服务进行通信"""
     
-    # DeepSeek API端点
-    API_BASE_URL = "https://api.deepseek.com"
-    COMPLETION_ENDPOINT = "/v1/chat/completions"
+    # AI服务类型常量
+    SERVICE_DEEPSEEK = "deepseek"
+    SERVICE_DOUBAO = "doubao"
+    SERVICE_KIMI = "kimi"
+    SERVICE_QIANWEN = "qianwen"
+    
+    # API端点配置
+    API_CONFIGS = {
+        SERVICE_DEEPSEEK: {
+            "base_url": "https://api.deepseek.com",
+            "completion_endpoint": "/v1/chat/completions",
+            "default_model": "deepseek-chat",
+            "auth_header": "Authorization",
+            "auth_prefix": "Bearer "
+        },
+        SERVICE_DOUBAO: {
+            "base_url": "https://api.doubao.com",
+            "completion_endpoint": "/api/v1/chat/completions",
+            "default_model": "doubao-pro-4k",
+            "auth_header": "Authorization",
+            "auth_prefix": "Bearer "
+        },
+        SERVICE_KIMI: {
+            "base_url": "https://api.moonshot.cn",
+            "completion_endpoint": "/v1/chat/completions",
+            "default_model": "moonshot-v1-8k",
+            "auth_header": "Authorization",
+            "auth_prefix": "Bearer "
+        },
+        SERVICE_QIANWEN: {
+            "base_url": "https://dashscope.aliyuncs.com",
+            "completion_endpoint": "/api/v1/services/aigc/text-generation/generation",
+            "default_model": "qwen-turbo",
+            "auth_header": "Authorization",
+            "auth_prefix": "Bearer "
+        }
+    }
     
     # 默认模型参数
-    DEFAULT_MODEL = "deepseek-chat"
     DEFAULT_MAX_TOKENS = 2000
     DEFAULT_TEMPERATURE = 0.7
     
@@ -74,79 +161,91 @@ class APIService:
             "Accept": "application/json"
         })
     
-    def validate_key(self, api_key: str) -> bool:
+    def validate_key(self, api_key: str, ai_service: str = SERVICE_DEEPSEEK) -> bool:
         """验证API密钥是否有效
         
         Args:
             api_key: API密钥
+            ai_service: AI服务类型
             
         Returns:
             bool: 如果密钥有效返回True，否则返回False
         """
-        self.logger.info("开始验证API密钥")
+        self.logger.info(f"开始验证{ai_service} API密钥")
         
         try:
             # 构造一个简单的验证请求
             test_prompt = "请验证此API密钥是否有效"
             response = self._send_request(
+                ai_service=ai_service,
                 api_key=api_key,
                 prompt=test_prompt,
                 max_tokens=1
             )
             
             # 检查响应是否成功
-            if response and "choices" in response and len(response["choices"]) > 0:
-                self.logger.info("API密钥验证成功")
-                return True
+            if ai_service == self.SERVICE_QIANWEN:
+                # 通义千问的响应格式
+                if response and "output" in response:
+                    self.logger.info(f"{ai_service} API密钥验证成功")
+                    return True
+            else:
+                # 通用响应格式
+                if response and "choices" in response and len(response["choices"]) > 0:
+                    self.logger.info(f"{ai_service} API密钥验证成功")
+                    return True
             
-            self.logger.warning("API密钥验证失败：无效的响应")
+            self.logger.warning(f"{ai_service} API密钥验证失败：无效的响应")
             return False
             
         except requests.exceptions.RequestException as e:
-            self.logger.error(f"API密钥验证时发生网络错误: {str(e)}")
+            self.logger.error(f"{ai_service} API密钥验证时发生网络错误: {str(e)}")
             # 如果是401错误，说明密钥无效
             if hasattr(e, 'response') and e.response and e.response.status_code == 401:
                 return False
             # 其他网络错误可能是临时问题
             raise
         except Exception as e:
-            self.logger.error(f"API密钥验证时发生未知错误: {str(e)}")
+            self.logger.error(f"{ai_service} API密钥验证时发生未知错误: {str(e)}")
             raise
     
-    def generate_content(self, selected_text: str, document_content: str, theme_prompt: str = "", **kwargs) -> str:
-        """生成内容（重写模式）
+    def generate_content(self, selected_text: str, document_content: str, theme_prompt: str = "", write_mode: str = "incremental", **kwargs) -> str:
+        """生成内容
         
         Args:
             selected_text: 用户选中的文本
             document_content: 文档内容
             theme_prompt: 用户自定义的主题提示词
+            write_mode: 写入模式，可选值：incremental, overwrite, cursor
             **kwargs: 额外参数
             
         Returns:
-            str: 生成的完整重写内容
+            str: 生成的内容
         """
-        self.logger.info(f"开始生成AI内容，进行文档重写")
+        self.logger.info(f"开始生成AI内容，写入模式: {write_mode}")
         
-        # 从配置中获取API密钥
+        # 从配置中获取API密钥和AI服务类型
         config = self.config_manager.load_config()
-        api_key = config.get("api_key")
+        ai_service = config.get("ai_service", self.SERVICE_DEEPSEEK)
+        api_key = config.get(f"{ai_service}_api_key")
         
         if not api_key:
-            raise ValueError("API密钥未配置")
+            raise ValueError(f"{ai_service} API密钥未配置")
         
         try:
             # 构造完整提示词
-            prompt = self._construct_rewrite_prompt(selected_text, document_content, theme_prompt)
+            prompt = self._construct_prompt(selected_text, document_content, theme_prompt, write_mode)
             
             # 发送请求
             response = self._send_request(
+                ai_service=ai_service,
                 api_key=api_key,
                 prompt=prompt,
                 **kwargs
             )
             
             # 解析响应
-            content = self._parse_response(response)
+            content = self._parse_response(response, ai_service)
             
             # 清理生成的内容
             cleaned_content = self._clean_generated_content(content)
@@ -158,13 +257,14 @@ class APIService:
             self.logger.error(f"生成AI内容时出错: {str(e)}")
             raise
             
-    def _construct_rewrite_prompt(self, selected_text: str, document_content: str, theme_prompt: str) -> str:
-        """构造重写模式的提示词
+    def _construct_prompt(self, selected_text: str, document_content: str, theme_prompt: str, write_mode: str) -> str:
+        """构造提示词
         
         Args:
             selected_text: 用户选中的文本
             document_content: 文档内容
             theme_prompt: 用户自定义的主题提示词
+            write_mode: 写入模式
             
         Returns:
             str: 构造好的提示词
@@ -185,8 +285,16 @@ class APIService:
         if not theme_prompt.strip():
             theme_prompt = "无特定主题要求，请保持原文档的专业风格和内容方向"
         
+        # 根据写入模式选择不同的提示词模板
+        if write_mode == "overwrite":
+            template = REWRITE_PROMPT_TEMPLATE
+        elif write_mode == "cursor":
+            template = CURSOR_PROMPT_TEMPLATE
+        else:  # incremental
+            template = INCREMENTAL_PROMPT_TEMPLATE
+        
         # 替换模板变量
-        prompt = INTERNAL_PROMPT_TEMPLATE.replace(
+        prompt = template.replace(
             "{selected_text}", 
             selected_text
         ).replace(
@@ -267,10 +375,11 @@ class APIService:
         
         return cleaned_content
     
-    def _send_request(self, api_key: str, prompt: str, **kwargs) -> Dict[str, Any]:
+    def _send_request(self, ai_service: str, api_key: str, prompt: str, **kwargs) -> Dict[str, Any]:
         """发送API请求
         
         Args:
+            ai_service: AI服务类型
             api_key: API密钥
             prompt: 提示词
             **kwargs: 额外参数
@@ -278,12 +387,15 @@ class APIService:
         Returns:
             Dict[str, Any]: API响应
         """
+        # 获取API配置
+        api_config = self.API_CONFIGS.get(ai_service, self.API_CONFIGS[self.SERVICE_DEEPSEEK])
+        
         # 构造请求参数
-        request_data = self._build_request_data(prompt, **kwargs)
+        request_data = self._build_request_data(prompt, ai_service, **kwargs)
         
         # 设置认证头
         headers = {
-            "Authorization": f"Bearer {api_key}"
+            api_config["auth_header"]: f"{api_config['auth_prefix']}{api_key}"
         }
         
         # 重试逻辑
@@ -294,9 +406,9 @@ class APIService:
             try:
                 with self.lock:
                     # 发送请求
-                    self.logger.debug(f"发送API请求，尝试 {retry_count + 1}/{self.MAX_RETRIES}")
+                    self.logger.debug(f"发送{ai_service} API请求，尝试 {retry_count + 1}/{self.MAX_RETRIES}")
                     response = self.session.post(
-                        self.API_BASE_URL + self.COMPLETION_ENDPOINT,
+                        api_config["base_url"] + api_config["completion_endpoint"],
                         json=request_data,
                         headers=headers,
                         timeout=30  # 30秒超时
@@ -315,22 +427,22 @@ class APIService:
                     
                     # 401: 认证错误，不重试
                     if status_code == 401:
-                        self.logger.error("API认证失败，请检查API密钥")
-                        raise ValueError("API密钥无效")
+                        self.logger.error(f"{ai_service} API认证失败，请检查API密钥")
+                        raise ValueError(f"{ai_service} API密钥无效")
                     
                     # 429: 请求频率限制，需要重试
                     elif status_code == 429:
                         retry_count += 1
                         wait_time = delay * (self.RETRY_BACKOFF ** (retry_count - 1))
                         self.logger.warning(
-                            f"请求频率限制，{wait_time:.2f}秒后重试..."
+                            f"{ai_service} 请求频率限制，{wait_time:.2f}秒后重试..."
                         )
                         time.sleep(wait_time)
                         continue
                     
                     # 其他HTTP错误
                     self.logger.error(
-                        f"HTTP错误: {status_code} - {e.response.text}"
+                        f"{ai_service} HTTP错误: {status_code} - {e.response.text}"
                     )
                     raise
                 
@@ -338,7 +450,7 @@ class APIService:
                 # 超时错误，重试
                 retry_count += 1
                 wait_time = delay * (self.RETRY_BACKOFF ** (retry_count - 1))
-                self.logger.warning(f"请求超时，{wait_time:.2f}秒后重试...")
+                self.logger.warning(f"{ai_service} 请求超时，{wait_time:.2f}秒后重试...")
                 time.sleep(wait_time)
                 continue
                 
@@ -347,27 +459,31 @@ class APIService:
                 retry_count += 1
                 wait_time = delay * (self.RETRY_BACKOFF ** (retry_count - 1))
                 self.logger.warning(
-                    f"网络错误: {str(e)}，{wait_time:.2f}秒后重试..."
+                    f"{ai_service} 网络错误: {str(e)}，{wait_time:.2f}秒后重试..."
                 )
                 time.sleep(wait_time)
                 continue
         
         # 达到最大重试次数
-        raise Exception(f"达到最大重试次数 ({self.MAX_RETRIES})，请求失败")
+        raise Exception(f"{ai_service} 达到最大重试次数 ({self.MAX_RETRIES})，请求失败")
     
-    def _build_request_data(self, prompt: str, **kwargs) -> Dict[str, Any]:
+    def _build_request_data(self, prompt: str, ai_service: str = SERVICE_DEEPSEEK, **kwargs) -> Dict[str, Any]:
         """构建请求数据
         
         Args:
             prompt: 提示词
+            ai_service: AI服务类型
             **kwargs: 额外参数
             
         Returns:
             Dict[str, Any]: 请求数据字典
         """
+        # 获取API配置
+        api_config = self.API_CONFIGS.get(ai_service, self.API_CONFIGS[self.SERVICE_DEEPSEEK])
+        
         # 基础请求数据
         request_data = {
-            "model": kwargs.get("model", self.DEFAULT_MODEL),
+            "model": kwargs.get("model", api_config["default_model"]),
             "messages": [
                 {
                     "role": "user",
@@ -391,39 +507,63 @@ class APIService:
         if "frequency_penalty" in kwargs:
             request_data["frequency_penalty"] = kwargs["frequency_penalty"]
         
+        # 针对不同AI服务的特殊处理
+        if ai_service == self.SERVICE_QIANWEN:
+            # 通义千问的请求格式略有不同
+            request_data = {
+                "model": request_data["model"],
+                "input": {
+                    "messages": request_data["messages"]
+                },
+                "parameters": {
+                    "max_tokens": request_data["max_tokens"],
+                    "temperature": request_data["temperature"],
+                    "top_p": request_data["top_p"]
+                }
+            }
+        
         return request_data
     
-    def _parse_response(self, response: Dict[str, Any]) -> str:
+    def _parse_response(self, response: Dict[str, Any], ai_service: str = SERVICE_DEEPSEEK) -> str:
         """解析API响应
         
         Args:
             response: API响应字典
+            ai_service: AI服务类型
             
         Returns:
             str: 解析后的内容
         """
         try:
-            # 检查响应结构
-            if "choices" not in response or not response["choices"]:
-                raise ValueError("响应中没有生成的内容")
-            
-            # 获取生成的内容
-            choice = response["choices"][0]
-            
-            # DeepSeek API响应格式检查
-            if "message" in choice and "content" in choice["message"]:
-                content = choice["message"]["content"]
-            elif "text" in choice:
-                content = choice["text"]
+            # 针对不同AI服务的响应格式进行解析
+            if ai_service == self.SERVICE_QIANWEN:
+                # 通义千问的响应格式
+                if "output" not in response:
+                    raise ValueError("响应中没有生成的内容")
+                return response["output"]["text"].strip()
             else:
-                raise ValueError("无法从响应中提取内容")
-            
-            # 去除首尾空白
-            return content.strip()
+                # 通用响应格式（DeepSeek、Doubao、Kimi等）
+                # 检查响应结构
+                if "choices" not in response or not response["choices"]:
+                    raise ValueError("响应中没有生成的内容")
+                
+                # 获取生成的内容
+                choice = response["choices"][0]
+                
+                # 检查响应格式
+                if "message" in choice and "content" in choice["message"]:
+                    content = choice["message"]["content"]
+                elif "text" in choice:
+                    content = choice["text"]
+                else:
+                    raise ValueError("无法从响应中提取内容")
+                
+                # 去除首尾空白
+                return content.strip()
             
         except (KeyError, IndexError, ValueError) as e:
-            self.logger.error(f"解析API响应时出错: {str(e)}")
-            raise ValueError(f"无效的API响应格式: {str(e)}")
+            self.logger.error(f"解析{ai_service} API响应时出错: {str(e)}")
+            raise ValueError(f"无效的{ai_service} API响应格式: {str(e)}")
     
     def close(self):
         """关闭会话，释放资源"""
