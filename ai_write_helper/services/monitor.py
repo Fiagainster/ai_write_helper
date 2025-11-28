@@ -229,24 +229,26 @@ class TextMonitorService(QObject):
             # 获取用户自定义的主题提示词（如果有）
             theme_prompt = self._get_theme_prompt(config)
             
-            # 调用API获取补写内容，传入选中文本、文档内容和主题提示词
-            response = self.api_service.generate_content(
-                selected_text=selected_text,
-                document_content=document_content,
-                theme_prompt=theme_prompt
-            )
-            
-            self.progress_updated.emit("写入中")
-            
             # 根据配置决定写入模式
             write_mode = config.get('write_mode', 'incremental')
             incremental = write_mode == 'incremental'
+            
+            # 调用API获取补写内容，传入选中文本、文档内容、主题提示词和写入模式
+            response = self.api_service.generate_content(
+                selected_text=selected_text,
+                document_content=document_content,
+                theme_prompt=theme_prompt,
+                write_mode=write_mode
+            )
+            
+            self.progress_updated.emit("写入中")
             
             # 写入文档
             self.document_service.write_document(
                 config['document_path'],
                 response,
-                incremental=incremental
+                incremental=incremental,
+                write_mode=write_mode
             )
             
             # 根据写入模式记录不同的日志
