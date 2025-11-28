@@ -327,7 +327,7 @@ class MainWindow(QMainWindow):
         """显示关于信息"""
         about_text = """AI写作助手 v1.0.0
 
-一个基于AI的划词补写工具，支持Word和Markdown文档。
+一个基于AI的划词补写工具，支持TXT，Word和Markdown文档。
 
 功能特点：
 - 全局监听文本选择和Enter键事件
