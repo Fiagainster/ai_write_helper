@@ -101,6 +101,7 @@ class APIService:
     SERVICE_DOUBAO = "doubao"
     SERVICE_KIMI = "kimi"
     SERVICE_QIANWEN = "qianwen"
+    SERVICE_OLLAMA = "ollama"
     
     # API端点配置
     API_CONFIGS = {
@@ -129,6 +130,13 @@ class APIService:
             "base_url": "https://dashscope.aliyuncs.com",
             "completion_endpoint": "/api/v1/services/aigc/text-generation/generation",
             "default_model": "qwen-turbo",
+            "auth_header": "Authorization",
+            "auth_prefix": "Bearer "
+        },
+        SERVICE_OLLAMA: {
+            "base_url": "http://localhost:11434",
+            "completion_endpoint": "/v1/chat/completions",
+            "default_model": "llama3",
             "auth_header": "Authorization",
             "auth_prefix": "Bearer "
         }
@@ -162,52 +170,84 @@ class APIService:
         })
     
     def validate_key(self, api_key: str, ai_service: str = SERVICE_DEEPSEEK) -> bool:
-        """验证API密钥是否有效
+        """验证API密钥或Ollama模型是否有效
         
         Args:
-            api_key: API密钥
+            api_key: API密钥或Ollama模型名称
             ai_service: AI服务类型
             
         Returns:
-            bool: 如果密钥有效返回True，否则返回False
+            bool: 如果有效返回True，否则返回False
         """
-        self.logger.info(f"开始验证{ai_service} API密钥")
-        
-        try:
-            # 构造一个简单的验证请求
-            test_prompt = "请验证此API密钥是否有效"
-            response = self._send_request(
-                ai_service=ai_service,
-                api_key=api_key,
-                prompt=test_prompt,
-                max_tokens=1
-            )
+        if ai_service == self.SERVICE_OLLAMA:
+            # Ollama验证逻辑：检查模型是否可用
+            self.logger.info(f"开始验证Ollama模型: {api_key}")
+            model_name = api_key
             
-            # 检查响应是否成功
-            if ai_service == self.SERVICE_QIANWEN:
-                # 通义千问的响应格式
-                if response and "output" in response:
-                    self.logger.info(f"{ai_service} API密钥验证成功")
-                    return True
-            else:
-                # 通用响应格式
+            try:
+                # 构造一个简单的验证请求
+                test_prompt = "请验证此模型是否可用"
+                response = self._send_request(
+                    ai_service=ai_service,
+                    api_key="",  # Ollama不需要API密钥
+                    prompt=test_prompt,
+                    max_tokens=1,
+                    model=model_name
+                )
+                
+                # 检查响应是否成功
                 if response and "choices" in response and len(response["choices"]) > 0:
-                    self.logger.info(f"{ai_service} API密钥验证成功")
+                    self.logger.info(f"Ollama模型 {model_name} 验证成功")
                     return True
-            
-            self.logger.warning(f"{ai_service} API密钥验证失败：无效的响应")
-            return False
-            
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"{ai_service} API密钥验证时发生网络错误: {str(e)}")
-            # 如果是401错误，说明密钥无效
-            if hasattr(e, 'response') and e.response and e.response.status_code == 401:
+                
+                self.logger.warning(f"Ollama模型 {model_name} 验证失败：无效的响应")
                 return False
-            # 其他网络错误可能是临时问题
-            raise
-        except Exception as e:
-            self.logger.error(f"{ai_service} API密钥验证时发生未知错误: {str(e)}")
-            raise
+                
+            except requests.exceptions.RequestException as e:
+                self.logger.error(f"Ollama模型验证时发生网络错误: {str(e)}")
+                raise
+            except Exception as e:
+                self.logger.error(f"Ollama模型验证时发生未知错误: {str(e)}")
+                raise
+        else:
+            # 其他AI服务的API密钥验证逻辑
+            self.logger.info(f"开始验证{ai_service} API密钥")
+            
+            try:
+                # 构造一个简单的验证请求
+                test_prompt = "请验证此API密钥是否有效"
+                response = self._send_request(
+                    ai_service=ai_service,
+                    api_key=api_key,
+                    prompt=test_prompt,
+                    max_tokens=1
+                )
+                
+                # 检查响应是否成功
+                if ai_service == self.SERVICE_QIANWEN:
+                    # 通义千问的响应格式
+                    if response and "output" in response:
+                        self.logger.info(f"{ai_service} API密钥验证成功")
+                        return True
+                else:
+                    # 通用响应格式
+                    if response and "choices" in response and len(response["choices"]) > 0:
+                        self.logger.info(f"{ai_service} API密钥验证成功")
+                        return True
+                
+                self.logger.warning(f"{ai_service} API密钥验证失败：无效的响应")
+                return False
+                
+            except requests.exceptions.RequestException as e:
+                self.logger.error(f"{ai_service} API密钥验证时发生网络错误: {str(e)}")
+                # 如果是401错误，说明密钥无效
+                if hasattr(e, 'response') and e.response and e.response.status_code == 401:
+                    return False
+                # 其他网络错误可能是临时问题
+                raise
+            except Exception as e:
+                self.logger.error(f"{ai_service} API密钥验证时发生未知错误: {str(e)}")
+                raise
     
     def generate_content(self, selected_text: str, document_content: str, theme_prompt: str = "", write_mode: str = "incremental", **kwargs) -> str:
         """生成内容
@@ -227,10 +267,22 @@ class APIService:
         # 从配置中获取API密钥和AI服务类型
         config = self.config_manager.load_config()
         ai_service = config.get("ai_service", self.SERVICE_DEEPSEEK)
-        api_key = config.get(f"{ai_service}_api_key")
         
-        if not api_key:
-            raise ValueError(f"{ai_service} API密钥未配置")
+        # 根据AI服务类型获取相应的配置
+        if ai_service == self.SERVICE_OLLAMA:
+            # Ollama需要模型名称而不是API密钥
+            model_name = config.get(f"{ai_service}_model")
+            if not model_name:
+                raise ValueError(f"{ai_service} 模型名称未配置")
+            
+            # 设置模型参数
+            kwargs["model"] = model_name
+            api_key = ""  # Ollama不需要API密钥
+        else:
+            # 其他AI服务需要API密钥
+            api_key = config.get(f"{ai_service}_api_key")
+            if not api_key:
+                raise ValueError(f"{ai_service} API密钥未配置")
         
         try:
             # 构造完整提示词
@@ -380,7 +432,7 @@ class APIService:
         
         Args:
             ai_service: AI服务类型
-            api_key: API密钥
+            api_key: API密钥或Ollama模型名称
             prompt: 提示词
             **kwargs: 额外参数
             
@@ -393,10 +445,12 @@ class APIService:
         # 构造请求参数
         request_data = self._build_request_data(prompt, ai_service, **kwargs)
         
-        # 设置认证头
-        headers = {
-            api_config["auth_header"]: f"{api_config['auth_prefix']}{api_key}"
-        }
+        # 设置认证头（Ollama不需要认证）
+        headers = {}
+        if ai_service != self.SERVICE_OLLAMA and api_key:
+            headers = {
+                api_config["auth_header"]: f"{api_config['auth_prefix']}{api_key}"
+            }
         
         # 重试逻辑
         retry_count = 0

@@ -485,6 +485,7 @@ class MainWindow(QMainWindow):
         self.ai_service_combo.addItem("豆包", "doubao")
         self.ai_service_combo.addItem("Kimi", "kimi")
         self.ai_service_combo.addItem("通义千问", "qianwen")
+        self.ai_service_combo.addItem("Ollama", "ollama")
         self.ai_service_combo.setFixedHeight(25)
         self.ai_service_combo.setStyleSheet("font-size: 11px;")
         self.ai_service_combo.currentIndexChanged.connect(self.on_ai_service_changed)
@@ -514,6 +515,26 @@ class MainWindow(QMainWindow):
         key_layout.addWidget(self.validate_button)
         
         api_layout.addLayout(key_layout)
+        
+        # Ollama模型名称输入（初始隐藏）
+        self.model_container = QWidget()
+        self.model_layout = QHBoxLayout(self.model_container)
+        self.model_label = QLabel("模型名称:")
+        self.model_label.setFixedWidth(60)
+        self.model_label.setStyleSheet("font-size: 11px;")
+        self.model_layout.addWidget(self.model_label)
+        self.ollama_model_input = QLineEdit()
+        self.ollama_model_input.setPlaceholderText("例如: llama3, gemma, mistral")
+        self.ollama_model_input.setFixedHeight(20)
+        self.ollama_model_input.setStyleSheet("font-size: 11px;")
+        self.model_layout.addWidget(self.ollama_model_input)
+        self.model_layout.addStretch()
+        self.model_layout.setContentsMargins(0, 0, 0, 0)
+        self.model_layout.setSpacing(5)
+        
+        api_layout.addWidget(self.model_container)
+        # 初始隐藏模型输入
+        self.model_container.setVisible(False)
         
         # 状态标签
         self.api_status_label = QLabel("请选择AI服务并输入API密钥")
@@ -692,9 +713,26 @@ class MainWindow(QMainWindow):
         if index >= 0:
             self.ai_service_combo.setCurrentIndex(index)
         
-        # 加载对应服务的API密钥
-        api_key = self.config.get(f"{ai_service}_api_key", "")
-        self.api_key_input.setText(api_key)
+        # 初始化UI元素可见性
+        if ai_service == "ollama":
+            # 显示Ollama模型输入，隐藏API密钥输入
+            self.model_container.setVisible(True)
+            self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+            self.api_key_input.setPlaceholderText("Ollama不需要API密钥")
+            self.api_key_input.setEnabled(False)
+            self.api_key_input.clear()  # 清空API密钥，确保安全
+            # 加载Ollama模型名称
+            model_name = self.config.get(f"{ai_service}_model", "")
+            self.ollama_model_input.setText(model_name)
+        else:
+            # 隐藏Ollama模型输入，显示API密钥输入
+            self.model_container.setVisible(False)
+            self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+            self.api_key_input.setPlaceholderText("")
+            self.api_key_input.setEnabled(True)
+            # 加载对应服务的API密钥
+            api_key = self.config.get(f"{ai_service}_api_key", "")
+            self.api_key_input.setText(api_key)
         
         # 加载文档路径
         if 'document_path' in self.config:
@@ -724,38 +762,82 @@ class MainWindow(QMainWindow):
         # 获取当前选择的AI服务
         ai_service = self.ai_service_combo.currentData()
         
-        # 加载对应服务的API密钥
-        api_key = self.config.get(f"{ai_service}_api_key", "")
-        self.api_key_input.setText(api_key)
+        # 更新UI元素可见性
+        if ai_service == "ollama":
+            # 显示Ollama模型输入，隐藏API密钥输入
+            self.model_container.setVisible(True)
+            self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+            self.api_key_input.setPlaceholderText("Ollama不需要API密钥")
+            self.api_key_input.setEnabled(False)
+            self.api_key_input.clear()  # 清空API密钥，确保安全
+            # 加载Ollama模型名称
+            model_name = self.config.get(f"{ai_service}_model", "")
+            self.ollama_model_input.setText(model_name)
+        else:
+            # 隐藏Ollama模型输入，显示API密钥输入
+            self.model_container.setVisible(False)
+            self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+            self.api_key_input.setPlaceholderText("")
+            self.api_key_input.setEnabled(True)
+            # 加载对应服务的API密钥
+            api_key = self.config.get(f"{ai_service}_api_key", "")
+            self.api_key_input.setText(api_key)
         
         # 更新状态标签
-        self.api_status_label.setText(f"请输入并验证{ai_service} API密钥")
+        if ai_service == "ollama":
+            self.api_status_label.setText(f"请输入并验证{ai_service} 模型名称")
+        else:
+            self.api_status_label.setText(f"请输入并验证{ai_service} API密钥")
     
     def validate_api_key(self):
-        """验证API密钥"""
+        """验证API密钥或Ollama模型"""
         # 获取当前选择的AI服务
         ai_service = self.ai_service_combo.currentData()
-        api_key = self.api_key_input.text().strip()
         
-        if not api_key:
-            QMessageBox.warning(self, "警告", "请输入API密钥")
-            return
-        
-        # 调用API服务验证密钥
-        try:
-            is_valid = self.api_service.validate_key(api_key, ai_service)
-            if is_valid:
-                self.api_status_label.setText(f"✓ {ai_service} API密钥有效")
-                self.api_status_label.setStyleSheet("color: green")
-                QMessageBox.information(self, "成功", f"{ai_service} API密钥验证成功")
-            else:
-                self.api_status_label.setText(f"✗ {ai_service} API密钥无效")
+        if ai_service == "ollama":
+            # 验证Ollama模型
+            model_name = self.ollama_model_input.text().strip()
+            if not model_name:
+                QMessageBox.warning(self, "警告", "请输入Ollama模型名称")
+                return
+            
+            # 调用API服务验证模型
+            try:
+                is_valid = self.api_service.validate_key(model_name, ai_service)
+                if is_valid:
+                    self.api_status_label.setText(f"✓ Ollama 模型 {model_name} 有效")
+                    self.api_status_label.setStyleSheet("color: green")
+                    QMessageBox.information(self, "成功", f"Ollama 模型 {model_name} 验证成功")
+                else:
+                    self.api_status_label.setText(f"✗ Ollama 模型 {model_name} 无效")
+                    self.api_status_label.setStyleSheet("color: red")
+                    QMessageBox.critical(self, "错误", f"Ollama 模型 {model_name} 验证失败")
+            except Exception as e:
+                self.api_status_label.setText(f"✗ 验证失败: {str(e)}")
                 self.api_status_label.setStyleSheet("color: red")
-                QMessageBox.critical(self, "错误", f"{ai_service} API密钥验证失败")
-        except Exception as e:
-            self.api_status_label.setText(f"✗ 验证失败: {str(e)}")
-            self.api_status_label.setStyleSheet("color: red")
-            QMessageBox.critical(self, "错误", f"验证过程出错: {str(e)}")
+                QMessageBox.critical(self, "错误", f"验证过程出错: {str(e)}")
+        else:
+            # 验证普通API密钥
+            api_key = self.api_key_input.text().strip()
+            if not api_key:
+                QMessageBox.warning(self, "警告", "请输入API密钥")
+                return
+            
+            # 调用API服务验证密钥
+            try:
+                is_valid = self.api_service.validate_key(api_key, ai_service)
+                if is_valid:
+                    self.api_status_label.setText(f"✓ {ai_service} API密钥有效")
+                    self.api_status_label.setStyleSheet("color: green")
+                    QMessageBox.information(self, "成功", f"{ai_service} API密钥验证成功")
+                else:
+                    self.api_status_label.setText(f"✗ {ai_service} API密钥无效")
+                    self.api_status_label.setStyleSheet("color: red")
+                    QMessageBox.critical(self, "错误", f"{ai_service} API密钥验证失败")
+            except Exception as e:
+                self.api_status_label.setText(f"✗ 验证失败: {str(e)}")
+                self.api_status_label.setStyleSheet("color: red")
+                QMessageBox.critical(self, "错误", f"验证过程出错: {str(e)}")
     
     def browse_document(self):
         """浏览并选择文档"""
@@ -775,15 +857,23 @@ class MainWindow(QMainWindow):
             # 获取当前选择的AI服务
             ai_service = self.ai_service_combo.currentData()
             
-            # 获取API密钥
-            api_key = self.api_key_input.text().strip()
-            if not api_key:
-                QMessageBox.warning(self, "警告", "请输入API密钥")
-                return
-            
-            # 保存AI服务类型和API密钥
+            # 保存AI服务类型
             self.config['ai_service'] = ai_service
-            self.config[f"{ai_service}_api_key"] = api_key
+            
+            if ai_service == "ollama":
+                # 获取并保存Ollama模型名称
+                model_name = self.ollama_model_input.text().strip()
+                if not model_name:
+                    QMessageBox.warning(self, "警告", "请输入Ollama模型名称")
+                    return
+                self.config[f"{ai_service}_model"] = model_name
+            else:
+                # 获取并保存普通API密钥
+                api_key = self.api_key_input.text().strip()
+                if not api_key:
+                    QMessageBox.warning(self, "警告", "请输入API密钥")
+                    return
+                self.config[f"{ai_service}_api_key"] = api_key
             
             # 获取文档路径
             document_path = self.doc_path_input.text().strip()
